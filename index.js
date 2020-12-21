@@ -1,7 +1,6 @@
 const _sodium = require('libsodium-wrappers')
 const TAI64 = require('tai64').TAI64
 const randomstring = require('randomstring')
-const cmdArgs = require('command-line-args')
 const amqp = require('amqplib')
 
 let ex

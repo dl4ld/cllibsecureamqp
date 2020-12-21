@@ -8,5 +8,11 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "amqplib": "^0.6.0",
+    "libsodium-wrappers": "^0.7.8",
+    "randomstring": "^1.1.5",
+    "tai64": "^1.0.0"
+  }
 }
