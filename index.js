@@ -2,6 +2,8 @@ const _sodium = require('libsodium-wrappers')
 const TAI64 = require('tai64').TAI64
 const randomstring = require('randomstring')
 const amqp = require('amqplib')
+const Redis = require('redis')
+const EventEmitter = require('events')
 
 let ex
 let amqpChannel
@@ -10,6 +12,37 @@ let keysB64
 let keys
 let myAddress
 let config
+let redis
+let interval
+
+const events = new EventEmitter()
+
+const heartbeat = 5000
+const ttl = 60
+
+exports.stopAnnouncing = () => {
+	if(interval) {
+		clearInterval(interval)
+	}
+}
+
+exports.events = events
+
+exports.startAnnouncing = (info) => {
+	const key = "cl:actor:" + info.name + ":" + info.address + ":info"
+
+	if(interval) {
+		clearInterval(interval)
+	}
+
+	interval = setInterval(function() {
+		redis.setex(key, ttl, JSON.stringify(info),  () => {
+			events.emit("announce", info)
+		})
+	}, heartbeat) 
+
+	return interval
+}
 
 const sessions = {}
 const callbacks = {}
@@ -19,15 +52,25 @@ function log(msg, type) {
 	console.log("[" + type + "] " + msg)
 }
 
-exports.initSecureAmqp = async (c) => {
-	config = c
-	ex = config.ex || "dex01"
-	await initSodium(config)
-	await initAmqp(config)
+exports.init = async (c) => {
+	try {
+		config = c
+		ex = config.rabbit.ex || "dex01"
+		await initSodium(config.rabbit)
+		log("Init sodium OK.")
+		await initAmqp(config.rabbit)
+		log("Init rabbit OK.")
+		await initRedis(config.redis)
+		log("Init redis OK.")
 	return true
+	} catch(err){
+		log(err, "ERROR")
+		return false
+	}
 }
 
 exports.securePublish = async (msg, rk, replyTo, endSession) => {
+	console.log("in spublish: ", rk)
 	sendMsg(msg, rk, null, replyTo, () => {
 		if(endSession) {
 			sendMsg("ending session", rk, "SESSION_KILL", replyTo, () => {
@@ -47,8 +90,53 @@ exports.secureSubscribe = (rk, cb) => {
 	return
 }
 
+exports.callFunction = (address, path, data, params, cb) => {
+	console.log("in call func")
+	const replyId = randomstring.generate(5)
+	this.securePublish(data, address + path, replyId, false)
+	const rk = myAddress + '.r.' + replyId
+	callbacks[rk] = function(d) {
+		cb(d)
+	}
+}
+
+exports.registerFunction = (path, guards, f) => {
+	const rk = myAddress + path
+	log("Registered function: " + rk)
+	const that = this
+	callbacks[rk] = function(d) {
+		const req = {
+			params: d
+		}
+		const res = {
+			send: function(data) {
+				console.log("in send")
+				const replyRk = d.header.src + ".r." + d.header.replyId
+				that.securePublish(data, replyRk, null, false)
+			}
+		}
+		f(req, res)
+	}
+}
+
 exports.getMyAddress = () => {
 	return keysB64.publicKey
+}
+
+function initRedis(c)  {
+	config = c
+	return new Promise((resolve, reject) => {
+		redis = Redis.createClient({
+			host: config.host || "127.0.0.1",
+			port: config.port || 6379
+		})
+		redis.on("ready", () => {
+			resolve()
+		})
+		redis.on("error", (err) => {
+			reject(err)
+		})
+	})
 }
 
 async function initSodium() {
@@ -69,8 +157,8 @@ async function initSodium() {
 	}
 
 	myAddress = keysB64.publicKey
-	log("Public address: " + keysB64.publicKey)
-	log("Private key: " + keysB64.privateKey)
+	//log("Public address: " + keysB64.publicKey)
+	//log("Private key: " + keysB64.privateKey)
 }
 
 async function initAmqp(config) {
@@ -79,8 +167,6 @@ async function initAmqp(config) {
 		const channel = await conn.createChannel()
 		amqpChannel = channel
 		channel.assertExchange(ex, 'topic', {durable:false})
-		log("Connected to amqp.")
-		
 		if(myAddress) {
 			const rk = myAddress + '.#'
 			const r = await channel.assertQueue('', {exclusive: true})
@@ -302,7 +388,7 @@ async function pingPong(msg) {
 
 }
 
-function createHeader(src, dst, type, version, replyTo, rk) {
+function createHeader(src, dst, type, version, replyId, rk) {
 	const now = TAI64.now().toHexString()
 	const header = {
 			version: version || "v1",
@@ -310,7 +396,7 @@ function createHeader(src, dst, type, version, replyTo, rk) {
 			type: type || "SESSION_MSG",
 			src: src,
 			dst: dst,
-			replyTo: replyTo,
+			replyId: replyId,
 			routingKey: rk
 	}
 
