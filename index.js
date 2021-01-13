@@ -8,8 +8,12 @@ const EventEmitter = require('events')
 let ex
 let amqpChannel
 let sodium
+// signature keys
 let keysB64
 let keys
+// enc keys
+let xkeys
+let xkeysB64
 let myAddress
 let config
 let redis
@@ -70,7 +74,6 @@ exports.init = async (c) => {
 }
 
 exports.securePublish = async (msg, rk, replyTo, endSession) => {
-	console.log("in spublish: ", rk)
 	sendMsg(msg, rk, null, replyTo, () => {
 		if(endSession) {
 			sendMsg("ending session", rk, "SESSION_KILL", replyTo, () => {
@@ -91,7 +94,6 @@ exports.secureSubscribe = (rk, cb) => {
 }
 
 exports.callFunction = (address, path, data, params, cb) => {
-	console.log("in call func")
 	const replyId = randomstring.generate(5)
 	this.securePublish(data, address + path, replyId, false)
 	const rk = myAddress + '.r.' + replyId
@@ -110,13 +112,60 @@ exports.registerFunction = (path, guards, f) => {
 		}
 		const res = {
 			send: function(data) {
-				console.log("in send")
 				const replyRk = d.header.src + ".r." + d.header.replyId
 				that.securePublish(data, replyRk, null, false)
 			}
 		}
 		f(req, res)
 	}
+}
+
+exports.sign = (s) => {
+	let signed = Buffer.from(sodium.crypto_sign_detached(s, keys.privateKey)).toString('base64')
+	return signed
+}
+
+exports.verify = (c, s, k) => {
+	c = Buffer.from(c, 'base64')
+	let valid = sodium.crypto_sign_verify_detached(c, s, base64toUint8(k))
+	return valid
+}
+
+exports.decodeToken = (t) => {
+	const p = t.split('.')
+	return JSON.parse(decodeB64(p[1])) 
+}
+
+exports.verifyToken = (t, k) => {
+	const p = t.split('.')
+	const decoded = {
+		header: JSON.parse(decodeB64(p[0])),
+		payload: JSON.parse(decodeB64(p[1]))
+	}
+	if(this.verify(p[2], p[0] + '.' + p[1], decoded.payload.pk)) {
+		return true
+	} else {
+		return false
+	}
+}
+
+exports.signedToken = (d, m) => {
+	m = m || 1440
+	const time = new Date()
+	const h = {
+		alg: "ed25519",
+		typ: "jclt"
+	}
+	const p = {
+		pk: keysB64.publicKey,
+		iat: time.toISOString(),
+		exp: new Date(time.getTime() + m*60000).toISOString(),
+		data: d
+	}
+	const t = encodeB64(JSON.stringify(h)) + '.' + encodeB64(JSON.stringify(p))
+	const s = this.sign(t)
+
+	return t + '.' + s
 }
 
 exports.getMyAddress = () => {
@@ -149,10 +198,19 @@ async function initSodium() {
 			privateKey: base64toUint8(keysB64.privateKey)
 		}
 	} else {
-		keys = sodium.crypto_kx_keypair()
+		//keys = sodium.crypto_kx_keypair()
+		keys = sodium.crypto_sign_keypair()
 		keysB64 = {
 			publicKey: uint8toBase64(keys.publicKey),
 			privateKey: uint8toBase64(keys.privateKey)
+		}
+		xkeys = {
+			privateKey: sodium.crypto_sign_ed25519_sk_to_curve25519(keys.privateKey),
+			publicKey: sodium.crypto_sign_ed25519_pk_to_curve25519(keys.publicKey)
+		}
+		xkeysB64 = {
+			publicKey: uint8toBase64(xkeys.publicKey),
+			privateKey: uint8toBase64(xkeys.privateKey)
 		}
 	}
 
@@ -177,7 +235,7 @@ async function initAmqp(config) {
 		}
 
 	} catch(err) {
-		console.log(err)
+		log(err, "ERROR")
 	}
 }
 
@@ -242,7 +300,7 @@ function updateSession(to, attr) {
 
 async function initSession(to, cb) {
 	const ch = amqpChannel
-	const mySecret = keys.privateKey
+	const mySecret = xkeys.privateKey
 	const hisPublic = base64toUint8(to)
 	const sharedKey = uint8toBase64(sodium.crypto_aead_xchacha20poly1305_ietf_keygen())
 	
@@ -288,7 +346,7 @@ async function initSession(to, cb) {
 
 async function ackSession(to, sharedKey) {
 	const ch = amqpChannel
-	const mySecret = keys.privateKey
+	const mySecret = xkeys.privateKey
 	const hisPublic = base64toUint8(to)
 	const session = sessions[to]
 	
@@ -339,7 +397,7 @@ function createSession(msg, ack) {
 	const nonce = base64toUint8(p[2])
 
 	const hisPublic = base64toUint8(header.src)
-	const mySecret = keys.privateKey
+	const mySecret = xkeys.privateKey
 
 	let decrypted = Buffer.from(
             sodium.crypto_box_open_easy(
