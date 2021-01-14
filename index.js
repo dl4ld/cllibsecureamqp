@@ -19,6 +19,13 @@ let config
 let redis
 let interval
 
+const myId = {
+	address: null,
+	name: null,
+	type: null,
+	functions: []
+}
+
 const events = new EventEmitter()
 
 const heartbeat = 5000
@@ -32,16 +39,16 @@ exports.stopAnnouncing = () => {
 
 exports.events = events
 
-exports.startAnnouncing = (info) => {
-	const key = "cl:actor:" + info.name + ":" + info.address + ":info"
+exports.startAnnouncing = () => {
+	const key = "cl:actor:" + myId.name + ":" + myId.address + ":info"
 
 	if(interval) {
 		clearInterval(interval)
 	}
 
 	interval = setInterval(function() {
-		redis.setex(key, ttl, JSON.stringify(info),  () => {
-			events.emit("announce", info)
+		redis.setex(key, ttl, JSON.stringify(myId),  () => {
+			events.emit("announce", myId)
 		})
 	}, heartbeat) 
 
@@ -66,6 +73,8 @@ exports.init = async (c) => {
 		log("Init rabbit OK.")
 		await initRedis(config.redis)
 		log("Init redis OK.")
+		myId.name = c.name
+		myId.type = c.type
 	return true
 	} catch(err){
 		log(err, "ERROR")
@@ -102,9 +111,12 @@ exports.callFunction = (address, path, data, params, cb) => {
 	}
 }
 
+exports.id = myId
+
 exports.registerFunction = (path, guards, f) => {
 	const rk = myAddress + path
 	log("Registered function: " + rk)
+	myId.functions.push(path)
 	const that = this
 	callbacks[rk] = function(d) {
 		const req = {
@@ -157,7 +169,7 @@ exports.signedToken = (d, m) => {
 		typ: "jclt"
 	}
 	const p = {
-		pk: keysB64.publicKey,
+		issuer: keysB64.publicKey,
 		iat: time.toISOString(),
 		exp: new Date(time.getTime() + m*60000).toISOString(),
 		data: d
@@ -166,6 +178,10 @@ exports.signedToken = (d, m) => {
 	const s = this.sign(t)
 
 	return t + '.' + s
+}
+
+exports.keys = () => {
+	return keysB64
 }
 
 exports.getMyAddress = () => {
@@ -204,19 +220,18 @@ async function initSodium() {
 			publicKey: uint8toBase64(keys.publicKey),
 			privateKey: uint8toBase64(keys.privateKey)
 		}
-		xkeys = {
-			privateKey: sodium.crypto_sign_ed25519_sk_to_curve25519(keys.privateKey),
-			publicKey: sodium.crypto_sign_ed25519_pk_to_curve25519(keys.publicKey)
-		}
-		xkeysB64 = {
-			publicKey: uint8toBase64(xkeys.publicKey),
-			privateKey: uint8toBase64(xkeys.privateKey)
-		}
+	}
+	xkeys = {
+		privateKey: sodium.crypto_sign_ed25519_sk_to_curve25519(keys.privateKey),
+		publicKey: sodium.crypto_sign_ed25519_pk_to_curve25519(keys.publicKey)
+	}
+	xkeysB64 = {
+		publicKey: uint8toBase64(xkeys.publicKey),
+		privateKey: uint8toBase64(xkeys.privateKey)
 	}
 
 	myAddress = keysB64.publicKey
-	//log("Public address: " + keysB64.publicKey)
-	//log("Private key: " + keysB64.privateKey)
+	myId.address = keysB64.publicKey
 }
 
 async function initAmqp(config) {
@@ -301,7 +316,8 @@ function updateSession(to, attr) {
 async function initSession(to, cb) {
 	const ch = amqpChannel
 	const mySecret = xkeys.privateKey
-	const hisPublic = base64toUint8(to)
+	//const hisPublic = base64toUint8(to)
+	const hisPublic = sodium.crypto_sign_ed25519_pk_to_curve25519(base64toUint8(to))
 	const sharedKey = uint8toBase64(sodium.crypto_aead_xchacha20poly1305_ietf_keygen())
 	
 	let nonce = sodium.randombytes_buf(24)
@@ -347,7 +363,8 @@ async function initSession(to, cb) {
 async function ackSession(to, sharedKey) {
 	const ch = amqpChannel
 	const mySecret = xkeys.privateKey
-	const hisPublic = base64toUint8(to)
+	//const hisPublic = base64toUint8(to)
+	const hisPublic = sodium.crypto_sign_ed25519_pk_to_curve25519(base64toUint8(to))
 	const session = sessions[to]
 	
 	let nonce = sodium.randombytes_buf(24)
@@ -396,7 +413,8 @@ function createSession(msg, ack) {
 	const ciphertext = base64toUint8(p[1])
 	const nonce = base64toUint8(p[2])
 
-	const hisPublic = base64toUint8(header.src)
+	//const hisPublic = base64toUint8(header.src)
+	const hisPublic = sodium.crypto_sign_ed25519_pk_to_curve25519(base64toUint8(header.src))
 	const mySecret = xkeys.privateKey
 
 	let decrypted = Buffer.from(
