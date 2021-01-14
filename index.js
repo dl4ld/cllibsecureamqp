@@ -154,11 +154,51 @@ exports.verifyToken = (t, k) => {
 		header: JSON.parse(decodeB64(p[0])),
 		payload: JSON.parse(decodeB64(p[1]))
 	}
-	if(this.verify(p[2], p[0] + '.' + p[1], decoded.payload.pk)) {
+	if(this.verify(p[2], p[0] + '.' + p[1], decoded.payload.issuer)) {
 		return true
 	} else {
 		return false
 	}
+}
+
+exports.subscribeEvent = async (name, cb) => {
+	const channel = amqpChannel
+	const rk = '*.e.' + name
+	channel.assertExchange(ex, 'topic', {durable:false})
+	const r = await channel.assertQueue('', {exclusive: true})
+	const q = await channel.bindQueue(r.queue, ex, rk)
+	channel.consume(r.queue, function(msg) {
+		const p = msg.content.toString().split('.')
+		const e = JSON.parse(decodeB64(p[1]))
+
+		if(cb) 	cb(e)
+	}, {noAck: true})
+}
+
+exports.emitEvent = (name, type, value, domainToken) => {
+	const ch = amqpChannel
+	const h = {
+		alg: "ed25519",
+		typ: "jcle"
+	}
+	const p = {
+		issuer: keysB64.publicKey,
+		iat: new Date().toISOString(),
+		//exp: new Date(time.getTime() + m*60000).toISOString(),
+		name: name,
+		type: type,
+		value: value,
+		domainToken: domainToken
+	}
+	const t = encodeB64(JSON.stringify(h)) + '.' + encodeB64(JSON.stringify(p))
+	// Self sign the event
+	const s = this.sign(t)
+	const e = t + '.' + s
+
+	// Broadcast event on msq
+	const rk = '*.e.' + name
+	ch.publish(ex, rk, Buffer.from(e))
+
 }
 
 exports.signedToken = (d, m) => {
