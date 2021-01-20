@@ -199,7 +199,6 @@ exports.emitEvent = (name, type, value, domainToken) => {
 	const e = t + '.' + s
 
 	// Broadcast event on msq
-	console.log("PUBLISH: ", rk)
 	ch.publish(ex, rk, Buffer.from(e))
 
 }
