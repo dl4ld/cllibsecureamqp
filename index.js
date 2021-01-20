@@ -119,9 +119,7 @@ exports.registerFunction = (path, guards, f) => {
 	myId.functions.push(path)
 	const that = this
 	callbacks[rk] = function(d) {
-		const req = {
-			params: d
-		}
+		const req = d
 		const res = {
 			send: function(data) {
 				const replyRk = d.header.src + ".r." + d.header.replyId
@@ -161,9 +159,13 @@ exports.verifyToken = (t, k) => {
 	}
 }
 
+function count(s, sep) {
+	return s.split(sep).length
+}
+
 exports.subscribeEvent = async (name, cb) => {
 	const channel = amqpChannel
-	const rk = '*.e.' + name
+	const rk = (count(name, '.') < 3) ? '*.e.' + name : name
 	channel.assertExchange(ex, 'topic', {durable:false})
 	const r = await channel.assertQueue('', {exclusive: true})
 	const q = await channel.bindQueue(r.queue, ex, rk)
@@ -177,6 +179,7 @@ exports.subscribeEvent = async (name, cb) => {
 
 exports.emitEvent = (name, type, value, domainToken) => {
 	const ch = amqpChannel
+	const rk = (count(name, '.') < 3) ? keysB64.publicKey + '.e.' + name : name
 	const h = {
 		alg: "ed25519",
 		typ: "jcle"
@@ -185,7 +188,7 @@ exports.emitEvent = (name, type, value, domainToken) => {
 		issuer: keysB64.publicKey,
 		iat: new Date().toISOString(),
 		//exp: new Date(time.getTime() + m*60000).toISOString(),
-		name: name,
+		name: rk,
 		type: type,
 		value: value,
 		domainToken: domainToken
@@ -196,7 +199,7 @@ exports.emitEvent = (name, type, value, domainToken) => {
 	const e = t + '.' + s
 
 	// Broadcast event on msq
-	const rk = '*.e.' + name
+	console.log("PUBLISH: ", rk)
 	ch.publish(ex, rk, Buffer.from(e))
 
 }
@@ -304,8 +307,16 @@ async function deleteSession(msg) {
 	}
 }
 
+function isEvent(rk) {
+	return (rk.split('.')[1] === 'e')
+}
+
 async function handler(msg) {
     const rk = msg.fields.routingKey
+	// ignore events
+	if(isEvent(rk)) {
+		return
+	}
 	const p = msg.content.toString().split('.')
 	const header = JSON.parse(decodeB64(p[0]))
 	const epayload = base64toUint8(p[1])
