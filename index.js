@@ -71,8 +71,10 @@ exports.init = async (c) => {
 		log("Init sodium OK.")
 		await initAmqp(config.rabbit)
 		log("Init rabbit OK.")
-		await initRedis(config.redis)
-		log("Init redis OK.")
+		if(config.redis) {
+			await initRedis(config.redis)
+			log("Init redis OK.")
+		}
 		myId.name = c.name
 		myId.type = c.type
 	return true
