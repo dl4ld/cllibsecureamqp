@@ -123,13 +123,61 @@ exports.registerFunction = (path, guards, f) => {
 	callbacks[rk] = function(d) {
 		const req = d
 		const res = {
-			send: function(data) {
+			send: function(data, status) {
+				const payload = {
+					response: data,
+					status: status || 200
+				}
 				const replyRk = d.header.src + ".r." + d.header.replyId
-				that.securePublish(data, replyRk, null, false)
+				that.securePublish(payload, replyRk, null, false)
 			}
 		}
 		f(req, res)
 	}
+}
+
+function convertTAI64toISO(tai64Hex) {
+	const unixTime = TAI64.fromHexString(tai64Hex).toUnix()
+	return new Date(unixTime * 1000).toISOString()
+}
+
+exports.monitorFunctions = async (cb) => {
+	const channel = amqpChannel
+	const rk = '*.f.*'
+	channel.assertExchange(ex, 'topic', {durable:false})
+	const r = await channel.assertQueue('', {exclusive: true})
+	const q = await channel.bindQueue(r.queue, ex, rk)
+	channel.consume(r.queue, function(msg) {
+		const p = msg.content.toString().split('.')
+		const e = JSON.parse(decodeB64(p[0]))
+
+		if(cb && e) {
+			const t1 = new Date
+			const t = TAI64.from
+			e['function'] = e.routingKey
+			e['time'] = convertTAI64toISO(e.time)
+			delete e['type']
+			delete e['routingKey']
+			delete e['replyId']
+
+			cb(e)
+		}
+	}, {noAck: true})
+}
+
+exports.monitorEvents = async (cb) => {
+	const channel = amqpChannel
+	const rk = '*.e.*'
+	channel.assertExchange(ex, 'topic', {durable:false})
+	const r = await channel.assertQueue('', {exclusive: true})
+	const q = await channel.bindQueue(r.queue, ex, rk)
+	channel.consume(r.queue, function(msg) {
+		const p = msg.content.toString().split('.')
+		const e = JSON.parse(decodeB64(p[1]))
+		if(cb) {
+			cb(e)
+		}
+	}, {noAck: true})
 }
 
 exports.sign = (s) => {
@@ -566,7 +614,7 @@ function waitForSessionAck(session, cb) {
 	}, 100)
 }
 
-function sendMsg(msg, rk, type, replyTo, cb) {
+function sendMsg(data, rk, type, replyTo, cb) {
 	const ch = amqpChannel
 	const to = rk.split('.')[0]
 	const session = sessions[to]
@@ -589,7 +637,7 @@ function sendMsg(msg, rk, type, replyTo, cb) {
 
 		const header = createHeader(myAddress, to, type, null, replyTo, rk)
 		const payload = {
-			msg: msg,
+			msg: data,
 			_pad: padding(96)
 		}
 		const epayload = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(JSON.stringify(payload), header.plaintext, null, myNonce, key)
@@ -629,7 +677,7 @@ async function decMsg(emsg) {
 	// Decrypt
 	const m = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(null, base64toUint8(em), ad, nonce, key)
 	const json = JSON.parse(new Buffer.from(m).toString())
-	log("Received msg: " + json.msg)
+	log("Received msg: " + JSON.stringify(json.msg))
 	// Update session nonce and time
 	updateSession(header.src, {
 		hisNonce: nonce,
