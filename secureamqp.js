@@ -69,10 +69,10 @@ this.init = async () => {
 	}
 }
 
-this.securePublish = async (msg, rk, replyTo, endSession) => {
-	sendMsg(msg, rk, null, replyTo, () => {
+this.securePublish = async (msg, rk, replyTo, endSession, headers) => {
+	sendMsg(msg, rk, null, replyTo, headers,  () => {
 		if(endSession) {
-			sendMsg("ending session", rk, "SESSION_KILL", replyTo, () => {
+			sendMsg("ending session", rk, "SESSION_KILL", {}, replyTo, () => {
 				const to = rk.split('.')[0]
 				const session = sessions[to]
 				if(session) {
@@ -89,9 +89,9 @@ this.secureSubscribe = (rk, cb) => {
 	return
 }
 
-this.callFunction = (address, path, data, params, cb) => {
+this.callFunction = (address, path, data, params, headers, cb) => {
 	const replyId = randomstring.generate(5)
-	this.securePublish(data, address + path, replyId, false)
+	this.securePublish(data, address + path, replyId, false, headers)
 	const rk = myAddress + '.r.' + replyId
 	callbacks[rk] = function(d) {
 		cb(d)
@@ -115,6 +115,15 @@ this.registerFunction = (path, guards, f) => {
 				}
 				const replyRk = d.header.src + ".r." + d.header.replyId
 				that.securePublish(payload, replyRk, null, false)
+			}
+		}
+		if(guards) {
+			const guard = guards.every((g) => {
+				return g(req)
+			})
+			if(!guard) {
+				log("Guard failed.")
+				return
 			}
 		}
 		f(req, res)
@@ -538,7 +547,7 @@ async function pingPong(msg) {
 
 }
 
-function createHeader(src, dst, type, version, replyId, rk) {
+function createHeader(src, dst, type, version, replyId, rk, headers) {
 	const now = TAI64.now().toHexString()
 	const header = {
 			version: version || "v1",
@@ -549,6 +558,11 @@ function createHeader(src, dst, type, version, replyId, rk) {
 			replyId: replyId,
 			routingKey: rk
 	}
+
+	headers = headers || {}
+	Object.keys(headers).forEach((k) => {
+		header[k] = headers[k]
+	})
 
 	return {
 		plaintext: JSON.stringify(header),
@@ -588,7 +602,7 @@ function waitForSessionAck(session, cb) {
 	}, 100)
 }
 
-function sendMsg(data, rk, type, replyTo, cb) {
+function sendMsg(data, rk, type, replyTo, headers, cb) {
 	const ch = amqpChannel
 	const to = rk.split('.')[0]
 	const session = sessions[to]
@@ -609,7 +623,7 @@ function sendMsg(data, rk, type, replyTo, cb) {
 		const key = base64toUint8(session.key)
 		const myNonce = incNonce(session.myNonce)
 
-		const header = createHeader(myAddress, to, type, null, replyTo, rk)
+		const header = createHeader(myAddress, to, type, null, replyTo, rk, headers)
 		const payload = {
 			msg: data,
 			_pad: padding(96)
