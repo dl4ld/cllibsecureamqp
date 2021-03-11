@@ -31,8 +31,28 @@ module.exports = function Actor(config) {
 		return this.secureAmqp.getMyAddress()
 	}
 
+	this.listen = function(event, f) {
+		return this.secureAmqp.subscribeEvent(event, f)
+	}
+
+	this.broadcast = function(name, type, data) {
+		const rk = this.id() + '.e.' + name
+		return this.secureAmqp.emitEvent(name, type, data , null)
+	}
+
 	this.actor = function(actorId) {
 		const that = this
+		function responseOk(res) {
+			const c = parseInt(res.msg.status)
+			if(!c) {
+				return false
+			}
+			if((c >= 200) && (c < 300)) {
+
+				return true
+			} 
+			return false
+		}
 		return {
 			call: function(name, opToken, params) {
 				const headers = {
@@ -40,7 +60,11 @@ module.exports = function Actor(config) {
 				}
 				return new Promise(function(resolve,reject) {
 					that.secureAmqp.callFunction(actorId, '.f.' + name, params, null, headers, function(res) {
-						resolve(res.msg.response)
+						if(responseOk(res)) {
+							resolve(res.msg.response)
+						} else { 
+							reject(res.msg)
+						}
 					})
 				})
 			},
@@ -48,7 +72,11 @@ module.exports = function Actor(config) {
 				const headers = {}
 				return new Promise(function(resolve,reject) {
 					that.secureAmqp.callFunction(actorId, '.f.sign', op, null, headers, function(res) {
-						resolve(res.msg.response)
+						if(responseOk(res)) {
+							resolve(res.msg.response)
+						} else { 
+							reject(res.msg)
+						}
 					})
 				})
 

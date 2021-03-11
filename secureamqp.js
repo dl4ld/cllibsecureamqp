@@ -220,12 +220,11 @@ this.subscribeEvent = async (name, cb) => {
 		Object.keys(h).forEach(k => {
 			e[k] = h[k]
 		})
-
 		if(cb) 	cb(e)
 	}, {noAck: true})
 }
 
-this.emitEvent = async (name, type, value, domainToken) => {
+this.emitEvent = async (name, type, value, token) => {
 	const ch = amqpChannel
 	const rk = (count(name, '.') < 3) ? keysB64.publicKey + '.e.' + name : name
 	const h = {
@@ -239,7 +238,7 @@ this.emitEvent = async (name, type, value, domainToken) => {
 		name: rk,
 		type: type,
 		value: value,
-		domainToken: domainToken
+		opAccessToken: token
 	}
 	const t = encodeB64(JSON.stringify(h)) + '.' + encodeB64(JSON.stringify(p))
 	// Self sign the event
