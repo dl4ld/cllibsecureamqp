@@ -196,6 +196,13 @@ this.verifyToken = (t, k) => {
 		header: JSON.parse(decodeB64(p[0])),
 		payload: JSON.parse(decodeB64(p[1]))
 	}
+
+	const now = new Date().getTime()
+	const exp = new Date(decoded.payload.exp).getTime()
+	if(now > exp) {
+		return false
+	}
+
 	if(this.verify(p[2], p[0] + '.' + p[1], decoded.payload.issuer)) {
 		return true
 	} else {
@@ -260,7 +267,7 @@ this.signedToken = (d, m) => {
 	const p = {
 		issuer: keysB64.publicKey,
 		iat: time.toISOString(),
-		exp: new Date(time.getTime() + m*60000).toISOString(),
+		exp: new Date(time.getTime() + (m*60)).toISOString(),
 		data: d
 	}
 	const t = encodeB64(JSON.stringify(h)) + '.' + encodeB64(JSON.stringify(p))
@@ -557,6 +564,8 @@ function createHeader(src, dst, type, version, replyId, rk, headers) {
 			replyId: replyId,
 			routingKey: rk
 	}
+
+	console.log("HEADERS: ", headers)
 
 	headers = headers || {}
 	Object.keys(headers).forEach((k) => {

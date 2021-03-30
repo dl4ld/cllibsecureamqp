@@ -1,4 +1,5 @@
 const SecureAmqp = require('./secureamqp.js')
+const randomstring = require('randomstring')
 const oneYear = 525949
 
 module.exports = function Actor(config) {
@@ -9,6 +10,8 @@ module.exports = function Actor(config) {
 	this.abilities = {}
 	this.events = {}
     this.data = {}
+	this.dataListeners = {}
+	this.dataObjects = {}
 	this.trust = {
 		
 	}
@@ -16,7 +19,26 @@ module.exports = function Actor(config) {
 
 
 	this.boot = async function() {
+		const that = this
 		await this.secureAmqp.init(config)
+		// respond to query for manifests
+		this.secureAmqp.registerFunction('.i.manifests', [], function(req, res) {
+			// build manifest list
+			const manifests = Object.keys(that.dataObjects).map(k => {
+				return that.dataObjects[k].manifest
+			})
+
+			res.send(manifests, 200)
+		})
+		// respond to query for abilities
+		this.secureAmqp.registerFunction('.i.abilities', [], function(req, res) {
+			// build manifest list
+			const abilities = Object.keys(that.abilities).map(k => {
+				return that.abilities[k]
+			})
+
+			res.send(abilities, 200)
+		})
 	}
 
 	this.addTrustedActor = function(id, abilities, data, events) {
@@ -31,8 +53,12 @@ module.exports = function Actor(config) {
 		return this.secureAmqp.getMyAddress()
 	}
 
-	this.listen = function(event, f) {
+	this.listenToEvent = function(event, f) {
 		return this.secureAmqp.subscribeEvent(event, f)
+	}
+
+	this.listenToMessages = function(f) {
+		return this.secureAmqp.registerFunction(".f.message", [], f)
 	}
 
 	this.broadcast = function(name, type, data) {
@@ -40,7 +66,7 @@ module.exports = function Actor(config) {
 		return this.secureAmqp.emitEvent(name, type, data , null)
 	}
 
-	this.actor = function(actorId) {
+	this.talkToActor = function(actorId) {
 		const that = this
 		function responseOk(res) {
 			const c = parseInt(res.msg.status)
@@ -54,9 +80,22 @@ module.exports = function Actor(config) {
 			return false
 		}
 		return {
+			sendMessage: function(params) {
+				const headers = {}
+				return new Promise(function(resolve,reject) {
+					that.secureAmqp.callFunction(actorId, '.f.message', params, null, headers, function(res) {
+						if(responseOk(res)) {
+							resolve(res.msg.response)
+						} else { 
+							reject(res.msg)
+						}
+					})
+				})
+			},
 			call: function(name, opToken, params) {
+				const tokens = (Array.isArray(opToken)) ? opTokens.join(',') : opToken
 				const headers = {
-					opAccessToken: opToken
+					opAccessToken: tokens
 				}
 				return new Promise(function(resolve,reject) {
 					that.secureAmqp.callFunction(actorId, '.f.' + name, params, null, headers, function(res) {
@@ -68,7 +107,81 @@ module.exports = function Actor(config) {
 					})
 				})
 			},
-			sign: function(op) {
+			interestInAsset: function(name, token, f) {
+				const headers = {}
+				headers.opAccessToken = token
+				const replyId = '.c.' + randomstring.generate(5)
+				const callbackRk = that.id()  + replyId
+				const params = {
+					periodicity: "changes",
+					callback: callbackRk
+				}
+
+				that.secureAmqp.registerFunction(replyId, [], f)
+
+				return new Promise(function(resolve,reject) {
+					that.secureAmqp.callFunction(actorId, '.d.' + name, params, null, headers, function(res) {
+						if(responseOk(res)) {
+							resolve(res.msg.response)
+						} else { 
+							reject(res.msg)
+						}
+					})
+				})
+			},
+			requestAllAbilities: function() {
+				const headers = {}
+				return new Promise(function(resolve,reject) {
+					that.secureAmqp.callFunction(actorId, '.i.abilities', {}, null, headers, function(res) {
+						if(responseOk(res)) {
+							resolve(res.msg.response)
+						} else { 
+							reject(res.msg)
+						}
+					})
+				})
+			},
+			requestAllManifests: function() {
+				const headers = {}
+				return new Promise(function(resolve,reject) {
+					that.secureAmqp.callFunction(actorId, '.i.manifests', {}, null, headers, function(res) {
+						if(responseOk(res)) {
+							resolve(res.msg.response)
+						} else { 
+							reject(res.msg)
+						}
+					})
+				})
+			},
+			requestManifest: function(name) {
+				const headers = {}
+				return new Promise(function(resolve,reject) {
+					that.secureAmqp.callFunction(actorId, '.m.' + name, {}, null, headers, function(res) {
+						if(responseOk(res)) {
+							resolve(res.msg.response)
+						} else { 
+							reject(res.msg)
+						}
+					})
+				})
+			},
+			requestAsset: function(name, tokens) {
+				const headers = {}
+				headers.opAccessToken = tokens
+				const params = {
+					periodicity: "once"
+				}
+				return new Promise(function(resolve,reject) {
+					that.secureAmqp.callFunction(actorId, '.d.' + name, params, null, headers, function(res) {
+						if(responseOk(res)) {
+							resolve(res.msg.response)
+						} else { 
+							reject(res.msg)
+						}
+					})
+				})
+			},
+			requestSignature: function(op) {
 				const headers = {}
 				return new Promise(function(resolve,reject) {
 					that.secureAmqp.callFunction(actorId, '.f.sign', op, null, headers, function(res) {
@@ -84,24 +197,112 @@ module.exports = function Actor(config) {
 		}
 	}
 
+	this.updateData = function(name, manifest, data) {
+		this.dataObjects[name] = {
+			manifest: manifest,
+			data: data
+		}
+		const listeners = this.dataListeners[name]
+		if(!listeners) {
+			return
+		}
 
-	this.createAbility = function(name, public, f) {
+		listeners
+			.filter(l => {	
+				const token = l.token
+				const decodedToken = this.secureAmqp.decodeToken(l.token)
+				if(!decodedToken) {
+					console.log("token error")
+					return false
+				}
+				const issuer = decodedToken.issuer
+				return this.secureAmqp.verifyToken(token, issuer)
+			})
+			.forEach(l => {
+				const address = l.callback.split('.')
+				const actorId = address.shift()
+				const call = '.' + address.join('.')
+				const payload = {
+					manifest: manifest,
+					data: data
+				}
+				const headers = {}
+				this.secureAmqp.callFunction(actorId, call, payload, null, headers, function(res) {
+					console.log("in return: ", call)
+				})
+
+			})
+	}
+
+	this.exposeAsset = function(name, manifest, data, f) {
+		const manifestRk = '.m.' + name
+		const dataRk = '.d.' + name
+		const authActors = manifest.authActors
+		const that = this
+		this.dataObjects[name] = {
+			manifest: manifest,
+			data: data
+		}
+		this.dataListeners[name] = []
 		function checkToken(req) {
 			console.log(req)
+			const tokens = req.header.opAccessToken.split(',')
+			let validate = false
+			tokens.forEach(t => {
+				const check = authActors.some(k => {
+					const token = that.secureAmqp.verifyToken(t, k)
+					console.log("verifyToken: ", token)
+					return token
+				})
+
+			})
+			return true
+		}
+
+		this.secureAmqp.registerFunction(manifestRk, [], function(req, res) {
+			res.send(manifest, 200)
+		})
+
+		this.secureAmqp.registerFunction(dataRk, [checkToken], function(req, res) {
+			console.log("access granted to ", name)
+			const params = req.msg || {}
+			console.log(params)
+			if(params.periodicity == 'once') {
+				res.send(data, 200)
+				return
+			}
+			if(params.periodicity == 'changes') {
+				that.dataListeners[name].push({
+					callback: params.callback,
+					ttl: params.ttl,
+					token: req.header.opAccessToken
+				})
+			}
+		})
+	}
+
+	this.createAbility = function(name, authActors, f) {
+		function checkToken(req) {
+			if(!authActors) {
+				return true
+			}
 			const token = req.header.opAccessToken
 			if(!token) {
 				return false
 			}
-			console.log("OpToken: ", token)
 			return true
 		}
 		const path = '.f.'  + name
 
-		if(!public) {
-			this.secureAmqp.registerFunction(path, [checkToken], f)
-		} else {
-			this.secureAmqp.registerFunction(path, [], f)
+		this.abilities[name] = {
+			name: name,
+			address: this.id() + path,
+			public: (authActors),
+			authActors: authActors || [],
+			responseSchema: {}
 		}
+
+		this.secureAmqp.registerFunction(path, [checkToken], f)
 	}
 
 	this.verifyOpToken = function(token) {
@@ -119,9 +320,6 @@ module.exports = function Actor(config) {
 			reason: ''
 		}
 	}
-
-
-
 
 	this.adoptChild = async function(actor) {
 		const token = await this.secureAmqp.signedToken({
@@ -157,8 +355,8 @@ module.exports = function Actor(config) {
 
 	}
 
-	this.sign = function(msg) {
-		return this.secureAmqp.signedToken(msg)
+	this.sign = function(msg, ttl) {
+		return this.secureAmqp.signedToken(msg, ttl)
 	}
 
 	this.askWhoIsOfType = function(type) {
