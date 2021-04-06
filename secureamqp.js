@@ -319,7 +319,6 @@ async function initAmqp(config) {
 	try {
 		const vhost = (config.vhost) ? "" + config.vhost : ''
 		const url = 'amqp://' + config.login + ":" + config.password + "@" + config.host + "/" + vhost
-console.log(url)
 		const conn = await amqp.connect(url)
 		const channel = await conn.createChannel()
 		amqpChannel = channel
