@@ -54,7 +54,6 @@ function log(msg, type) {
 
 this.init = async () => {
 	try {
-		console.log(config)
 		ex = config.rabbit.ex || 'network'
 		await initSodium(config.rabbit)
 		log("Init sodium OK.")
@@ -566,8 +565,6 @@ function createHeader(src, dst, type, version, replyId, rk, headers) {
 			replyId: replyId,
 			routingKey: rk
 	}
-
-	console.log("HEADERS: ", headers)
 
 	headers = headers || {}
 	Object.keys(headers).forEach((k) => {
