@@ -55,7 +55,7 @@ function log(msg, type) {
 this.init = async () => {
 	try {
 		console.log(config)
-		ex = config.rabbit.ex || "dex01"
+		ex = config.rabbit.ex || 'network'
 		await initSodium(config.rabbit)
 		log("Init sodium OK.")
 		await initAmqp(config.rabbit)
@@ -317,7 +317,10 @@ async function initSodium() {
 
 async function initAmqp(config) {
 	try {
-		const conn = await amqp.connect('amqp://' + config.login + ":" + config.password + "@" + config.host)
+		const vhost = (config.vhost) ? "" + config.vhost : ''
+		const url = 'amqp://' + config.login + ":" + config.password + "@" + config.host + "/" + vhost
+console.log(url)
+		const conn = await amqp.connect(url)
 		const channel = await conn.createChannel()
 		amqpChannel = channel
 		channel.assertExchange(ex, 'topic', {durable:false})

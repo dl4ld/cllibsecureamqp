@@ -48,6 +48,10 @@ module.exports = function Actor(config) {
 			events: events || []
 		}
 	}
+
+	this.privateKey = function() {
+		return this.secureAmqp.keys().privateKey
+	}
 	
 	this.id = function() {
 		return this.secureAmqp.getMyAddress()
