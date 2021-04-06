@@ -61,6 +61,10 @@ module.exports = function Actor(config) {
 		return this.secureAmqp.subscribeEvent(event, f)
 	}
 
+	this.monitorInteractions = function(f) {
+		return this.secureAmqp.monitorFunctions(f)
+	}
+
 	this.listenToMessages = function(f) {
 		return this.secureAmqp.registerFunction(".f.message", [], f)
 	}
@@ -285,16 +289,35 @@ module.exports = function Actor(config) {
 		})
 	}
 
+	this.verifyToken = function(token) {
+		return this.secureAmqp.verifyToken(token)
+	}
+
+	this.decodeToken = function(token) {
+		return this.secureAmqp.decodeToken(token)
+	}
+
 	this.createAbility = function(name, authActors, f) {
+		const that = this
 		function checkToken(req) {
 			if(!authActors) {
 				return true
 			}
 			const token = req.header.opAccessToken
 			if(!token) {
+				console.log("No token")
 				return false
 			}
-			return true
+			const decodedToken = that.secureAmqp.decodeToken(token)
+			if(decodedToken.data.dst != that.id()) {
+				console.log("I'm not " + decodedToken.data.dst)
+				return false
+			}
+			if(decodedToken.data.operation != name) {
+				console.log("Operation not permitted: " + name)
+				return false
+			}
+			return that.secureAmqp.verifyToken(token)
 		}
 		const path = '.f.'  + name
 
@@ -307,10 +330,6 @@ module.exports = function Actor(config) {
 		}
 
 		this.secureAmqp.registerFunction(path, [checkToken], f)
-	}
-
-	this.verifyOpToken = function(token) {
-
 	}
 
 	this.createOperationRequestDefinition = function(actorId, name, type) {
